@@ -26,6 +26,13 @@ tests/              # pytest, mirrors src/relation_extraction/
 See `docs/superpowers/specs/2026-08-10-repo-scaffold-design.md` for the full
 design rationale.
 
+## Dataset
+
+The relation-extraction corpus is [Chia](https://doi.org/10.6084/m9.figshare.11855817)
+(clinical trial eligibility criteria, CC-BY-4.0). Profiling results are in
+[`profile_report.md`](profile_report.md); every preparation decision and known
+limitation is recorded in [`docs/chia/README.md`](docs/chia/README.md).
+
 ## Setup
 
 This project uses [uv](https://docs.astral.sh/uv/) for dependency and
