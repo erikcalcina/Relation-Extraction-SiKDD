@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Environments
+.venv/
+.env
+
+# uv
+uv.lock.tmp
+
+# Data and outputs
+data/**
+!data/**/
+!data/**/.gitkeep
+outputs/**
+!outputs/.gitkeep
+
+# Model weights / checkpoints
+*.pt
+*.bin
+*.safetensors
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Testing / tooling caches
+.pytest_cache/
+.ruff_cache/
