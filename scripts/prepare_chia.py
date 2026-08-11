@@ -59,7 +59,8 @@ def build_stats_report(stats: dict, neg_stats: dict, args, drops: DropLog) -> st
       "without regenerating the data.\n")
 
     w("## Totals\n")
-    keys = [
+    rows = []
+    for key, label in [
         ("trials", "Trials"),
         ("documents", "Documents"),
         ("criteria", "Criteria (instances)"),
@@ -69,48 +70,36 @@ def build_stats_report(stats: dict, neg_stats: dict, args, drops: DropLog) -> st
         ("boolean_relations", "Boolean relations (`AND`/`OR`)"),
         ("relations", "All relations"),
         ("negative_pairs", "Negative (NA) pairs"),
-    ]
-    rows = []
-    for key, label in keys:
+    ]:
         vals = [stats[s][key] for s in SPLIT_NAMES]
         rows.append([label] + [f"{v:,}" for v in vals] + [f"{sum(vals):,}"])
     w(md_table(["Quantity", "train", "dev", "test", "total"], rows, "lrrrr"))
     w("")
 
-    pcts = []
     total_trials = sum(stats[s]["trials"] for s in SPLIT_NAMES)
-    for s in SPLIT_NAMES:
-        pcts.append(f"{100.0 * stats[s]['trials'] / total_trials:.1f}%")
-    w(f"Trial-level split actually achieved: "
-      + " / ".join(f"{s} {p}" for s, p in zip(SPLIT_NAMES, pcts)) + ".\n")
+    w("Trial-level split actually achieved: " + " / ".join(
+        f"{s} {100.0 * stats[s]['trials'] / total_trials:.1f}%" for s in SPLIT_NAMES
+    ) + ".\n")
 
-    w("## Relations per type and split\n")
-    all_types = collections.Counter()
-    for s in SPLIT_NAMES:
-        all_types.update(stats[s]["relation_types"])
-    rows = []
-    for rtype, total in all_types.most_common():
-        flag = " *(Boolean)*" if rtype.upper() in BOOLEAN_RELATION_TYPES else ""
-        rows.append(
-            [f"`{rtype}`{flag}"]
-            + [f"{stats[s]['relation_types'].get(rtype, 0):,}" for s in SPLIT_NAMES]
-            + [f"{total:,}"]
-        )
-    w(md_table(["Relation type", "train", "dev", "test", "total"], rows, "lrrrr"))
-    w("")
-
-    w("## Entities per type and split\n")
-    all_ents = collections.Counter()
-    for s in SPLIT_NAMES:
-        all_ents.update(stats[s]["entity_types"])
-    rows = [
-        [f"`{etype}`"]
-        + [f"{stats[s]['entity_types'].get(etype, 0):,}" for s in SPLIT_NAMES]
-        + [f"{total:,}"]
-        for etype, total in all_ents.most_common()
-    ]
-    w(md_table(["Entity type", "train", "dev", "test", "total"], rows, "lrrrr"))
-    w("")
+    for key, heading, noun in [
+        ("relation_types", "Relations per type and split", "Relation type"),
+        ("entity_types", "Entities per type and split", "Entity type"),
+    ]:
+        w(f"## {heading}\n")
+        totals = collections.Counter()
+        for s in SPLIT_NAMES:
+            totals.update(stats[s][key])
+        rows = []
+        for name, total in totals.most_common():
+            flag = (" *(Boolean)*" if key == "relation_types"
+                    and name.upper() in BOOLEAN_RELATION_TYPES else "")
+            rows.append(
+                [f"`{name}`{flag}"]
+                + [f"{stats[s][key].get(name, 0):,}" for s in SPLIT_NAMES]
+                + [f"{total:,}"]
+            )
+        w(md_table([noun, "train", "dev", "test", "total"], rows, "lrrrr"))
+        w("")
 
     w("## Negative (NA) pairs\n")
     w("**Candidate rule:** every ordered pair of distinct entities within the same "
@@ -149,7 +138,7 @@ def build_stats_report(stats: dict, neg_stats: dict, args, drops: DropLog) -> st
     return "\n".join(out)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     root = Path(__file__).resolve().parents[1]
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--source", type=Path,
@@ -166,7 +155,7 @@ def main() -> int:
     ap.add_argument("--keep-empty-criteria", action="store_true",
                     help="emit criteria with no in-schema entities (they yield no "
                          "candidate pairs, so they are dropped by default)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     print(f"loading {args.source} ...", file=sys.stderr)
     docs = load_corpus(args.source)
@@ -189,14 +178,17 @@ def main() -> int:
         inst["split"] = split_map[inst["nct_id"]]
         by_split[inst["split"]].append(inst)
 
-    # The leakage control, tested rather than assumed.
-    id_sets = {name: {i["nct_id"] for i in by_split[name]} for name in SPLIT_NAMES}
-    for i, a in enumerate(SPLIT_NAMES):
-        for b in SPLIT_NAMES[i + 1:]:
-            shared = id_sets[a] & id_sets[b]
-            assert not shared, f"NCT leakage between {a} and {b}: {sorted(shared)[:5]}"
-    assert sum(len(v) for v in by_split.values()) == len(instances)
-    print("split disjointness asserted: train/dev/test share no NCT id",
+    # The leakage control, checked rather than assumed. Not `assert`: this must
+    # survive `python -O`, or a leaking dataset gets written in silence.
+    seen: dict[str, str] = {}
+    for name in SPLIT_NAMES:
+        for inst in by_split[name]:
+            if seen.setdefault(inst["nct_id"], name) != name:
+                raise ValueError(
+                    f"NCT leakage: {inst['nct_id']} is in both "
+                    f"{seen[inst['nct_id']]} and {name}"
+                )
+    print("split disjointness checked: train/dev/test share no NCT id",
           file=sys.stderr)
 
     neg_stats = collections.Counter()

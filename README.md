@@ -52,13 +52,25 @@ plain `python` instead.
 
 Scripts are config-driven via YAML files in `configs/`:
 
+Dataset preparation is implemented. One command downloads, verifies, extracts
+and converts the corpus — stdlib only, so it needs no venv and no `uv sync`:
+
 ```bash
-uv run scripts/prepare_data.py --config configs/data.yaml
+python3 scripts/setup_chia.py
+```
+
+It takes about 3 seconds from cold, skips any step whose output already
+exists, and is deterministic — re-running reproduces every artifact byte for
+byte. See [`docs/chia/README.md`](docs/chia/README.md) for the flags and for
+the by-hand equivalent.
+
+Training and evaluation will be config-driven via YAML in `configs/`, added as
+the corresponding modules are implemented:
+
+```bash
 uv run scripts/train.py --config configs/train.yaml
 uv run scripts/evaluate.py --config configs/eval.yaml
 ```
-
-(Scripts and configs are added as the corresponding modules are implemented.)
 
 ## Testing
 

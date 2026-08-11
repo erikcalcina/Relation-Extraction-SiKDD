@@ -181,6 +181,25 @@ def test_negative_subsampling_is_seeded_and_reproducible():
     assert len(first) == 2  # ratio 2.0 x 1 positive
 
 
+def test_subsampling_keeps_a_negative_for_all_NA_criteria():
+    """`ratio x 0 positives` must not erase the abstain examples entirely."""
+    inst = _instance(["T1", "T2", "T3"], [])
+    add_negatives([inst], seed=1, ratio=2.0, include_boolean=True)
+    assert len(inst["negative_pairs"]) == 1
+
+
+def test_offset_mismatch_raises_rather_than_asserting(tmp_path, monkeypatch):
+    """The guarantee must survive `python -O`, which strips `assert`."""
+    from relation_extraction.data import chia_convert
+
+    doc = load_document(
+        write_pair(tmp_path, "aspirin\n", "T1\tDrug 0 7\taspirin\n")
+    )
+    doc.entities["T1"].ann_text = "not what the text says"
+    with pytest.raises(ValueError, match="offset mismatch"):
+        chia_convert.convert_document(doc, DropLog())
+
+
 # --------------------------------------------------------------------------
 # Splits
 # --------------------------------------------------------------------------
@@ -205,7 +224,7 @@ def test_splits_are_deterministic_for_a_seed():
 
 
 def test_split_fractions_must_sum_to_one():
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         make_splits(["NCT1", "NCT2"], seed=1, fractions=(0.5, 0.2, 0.2))
 
 

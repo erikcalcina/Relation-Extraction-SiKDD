@@ -24,3 +24,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/relation_extraction"]
+
+[tool.ruff.lint]
+# E402 (import-not-at-top) is enabled so the `# noqa: E402` on the scripts'
+# post-sys.path imports are meaningful rather than dead comments.
+select = ["E4", "E7", "E9", "F", "I"]

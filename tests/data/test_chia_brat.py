@@ -18,10 +18,9 @@ from relation_extraction.data.chia_brat import (  # noqa: E402
     SCHEMA_RELATION_TYPES,
     fix_entity_offsets,
     load_document,
-    normalise_criterion,
     parse_ann,
     repair_entity,
-    sentence_spans,
+    surface,
 )
 
 CORPUS = ROOT / "data" / "raw" / "without_scope"
@@ -76,28 +75,28 @@ def test_multi_span_offsets_are_parsed(tmp_path):
     doc = load_document(write_pair(tmp_path, text, ann))
 
     ent = doc.entities["T1"]
-    assert ent.is_discontinuous
     assert ent.spans == ((0, 12), (19, 20))
-    assert ent.surface(doc.text) == "greater than 1"
+    assert surface(doc.text, ent.spans) == "greater than 1"
 
 
-def test_all_brat_line_types_are_handled():
+def test_the_three_line_types_chia_uses_are_handled():
+    """Chia contains only T, R and * lines -- nothing else is parsed."""
     parsed = parse_ann(
         "T1\tDrug 0 7\taspirin\n"
         "T2\tValue 8 12\t10mg\n"
         "R1\tHas_value Arg1:T1 Arg2:T2\t\n"
         "*\tOR T1 T2\n"
-        "E1\tEvent:T1 Theme:T2\n"
-        "A1\tOptional T1\n"
-        "N1\tReference T1 UMLS:C0004057\taspirin\n"
     )
-    assert len(parsed["text_bound_annotations"]) == 2
+    assert len(parsed["entities"]) == 2
     assert len(parsed["relations"]) == 1
     assert len(parsed["equivalences"]) == 1
-    assert len(parsed["events"]) == 1
-    assert len(parsed["attributes"]) == 1
-    assert len(parsed["normalizations"]) == 1
     assert parsed["malformed"] == []
+
+
+def test_unrecognised_lines_are_collected_not_skipped():
+    parsed = parse_ann("E1\tEvent:T1 Theme:T2\nT1\tDrug\n")
+    assert len(parsed["malformed"]) == 2
+    assert parsed["entities"] == []
 
 
 def test_equivalence_expands_to_pairwise_relations(tmp_path):
@@ -113,21 +112,23 @@ def test_equivalence_expands_to_pairwise_relations(tmp_path):
     assert all(r.type == "OR" for r in synth)
 
 
-def test_equivalence_synthesis_can_be_disabled(tmp_path):
-    ann = "T1\tDrug 0 1\ta\nT2\tDrug 2 3\tb\n*\tOR T1 T2\n"
-    doc = load_document(write_pair(tmp_path, "a b\n", ann), synthesise_or=False)
-    assert doc.relations == []
-    assert len(doc.equivalences) == 1
+def test_synthesised_ids_never_collide_with_real_relation_ids(tmp_path):
+    """BigBIO numbers from len(relations)+10 -- a count, not the highest id."""
+    ann = ("T1\tDrug 0 1\ta\nT2\tDrug 2 3\tb\nT3\tDrug 4 5\tc\n"
+           "R11\tSubsumes Arg1:T1 Arg2:T2\t\n*\tOR T1 T2 T3\n")
+    doc = load_document(write_pair(tmp_path, "a b c\n", ann))
+
+    ids = [r.id for r in doc.relations]
+    assert len(ids) == len(set(ids)), ids
 
 
-def test_dangling_relation_argument_is_recorded_not_silently_dropped(tmp_path):
+def test_dangling_relation_argument_is_passed_through_for_the_converter(tmp_path):
+    """The parser filters nothing; the converter's drop log is the one gate."""
     ann = "T1\tDrug 0 7\taspirin\nR1\tHas_value Arg1:T1 Arg2:T99\t\n"
     doc = load_document(write_pair(tmp_path, "aspirin\n", ann))
 
-    assert doc.relations == []
-    assert [(d.kind, d.reason) for d in doc.drops] == [
-        ("relation", "dangling_argument")
-    ]
+    assert [r.arg2_id for r in doc.relations] == ["T99"]
+    assert "T99" not in doc.entities
 
 
 # --------------------------------------------------------------------------
@@ -147,7 +148,7 @@ def test_has_context_has_no_trailing_space():
 def test_relation_types_match_case_insensitively(tmp_path, raw):
     ann = f"T1\tDrug 0 1\ta\nT2\tValue 2 3\tb\nR1\t{raw} Arg1:T1 Arg2:T2\t\n"
     doc = load_document(write_pair(tmp_path, "a b\n", ann))
-    assert doc.relations[0].in_schema
+    assert doc.relations[0].norm_type in SCHEMA_RELATION_TYPES
 
 
 # --------------------------------------------------------------------------
@@ -165,16 +166,20 @@ def test_fix_entity_offsets_gives_up_gracefully():
     assert fix_entity_offsets("abc", "zzz", (0, 3)) == (0, 3)
 
 
+def test_fix_entity_offsets_never_wraps_past_the_start_of_the_document():
+    """A left shift below 0 must not slice from the end via negative indexing.
+
+    BigBIO's routine searches `doc_text[left - i : right - i]` unguarded, so a
+    mention near the start can match near the *end* and come back with negative
+    offsets that then "verify" against the same wrapped slice.
+    """
+    text = "ab" + "z" * 40 + "qq"
+    start, end = fix_entity_offsets(text, "qq", (0, 2))
+    assert start >= 0 and text[start:end] == "qq"
+
+
 def test_repair_entity_reports_exact_when_already_correct():
     assert repair_entity("aspirin 10mg", ((0, 7),), "aspirin") == (((0, 7),), "exact")
-
-
-def test_repair_entity_global_shift_fixes_discontinuous_spans():
-    """BigBIO cannot repair these at all; a single shared delta can."""
-    text = "xx greater than Grade 1 toxicity"
-    spans, status = repair_entity(text, ((0, 12), (19, 20)), "greater than 1")
-    assert status == "global_shift"
-    assert " ".join(text[s:e] for s, e in spans) == "greater than 1"
 
 
 def test_repair_entity_marks_unrepairable():
@@ -182,23 +187,16 @@ def test_repair_entity_marks_unrepairable():
     assert status == "unrepaired"
 
 
-# --------------------------------------------------------------------------
-# Text utilities
-# --------------------------------------------------------------------------
+def test_misaligned_discontinuous_entity_is_flagged_not_guessed():
+    """No repair is attempted for multi-span mentions; Chia needs none.
 
-
-def test_normalise_criterion_collapses_whitespace_and_case():
-    assert normalise_criterion("  Written   INFORMED\tconsent \n") == (
-        "written informed consent"
-    )
-
-
-def test_sentence_spans_splits_within_a_line_only():
-    text = "First one. Second one."
-    assert [text[s:e] for s, e in sentence_spans(text, (0, len(text)))] == [
-        "First one. ",
-        "Second one.",
-    ]
+    All 1,796 discontinuous mentions verify exactly once the text is read
+    without newline translation, so a mismatch here means something is wrong
+    upstream and should surface rather than be silently relocated.
+    """
+    text = "xx greater than Grade 1 toxicity"
+    _, status = repair_entity(text, ((0, 12), (19, 20)), "greater than 1")
+    assert status == "unrepaired"
 
 
 # --------------------------------------------------------------------------
@@ -218,7 +216,7 @@ def test_corpus_offsets_verify_against_the_text():
             if ent.type not in SCHEMA_ENTITY_TYPES:
                 continue
             total += 1
-            if ent.surface(doc.text) == ent.ann_text:
+            if surface(doc.text, ent.spans) == ent.ann_text:
                 exact += 1
     assert total == 40976
     assert exact / total > 0.999, f"only {exact}/{total} offsets verify"
@@ -232,3 +230,26 @@ def test_corpus_reconciles_on_documents_and_criteria():
     assert len(docs) == 2000
     assert len({d.nct_id for d in docs}) == 1000
     assert sum(len(d.criterion_spans()) for d in docs) == 12409
+
+
+@requires_corpus
+def test_corpus_contains_only_the_three_parsed_line_types():
+    """The reason this parser is scoped the way it is -- asserted, not assumed."""
+    tags = {line[0] for path in CORPUS.glob("*.ann")
+            for line in path.read_text(encoding="utf-8").splitlines() if line}
+    assert tags == {"T", "R", "*"}
+
+
+@requires_corpus
+def test_corpus_has_no_malformed_lines_and_no_duplicate_entity_ids():
+    from relation_extraction.data.chia_brat import load_corpus
+
+    for path in sorted(CORPUS.glob("*.ann")):
+        parsed = parse_ann(path.read_text(encoding="utf-8"))
+        assert parsed["malformed"] == [], path.name
+        ids = [e["id"] for e in parsed["entities"]]
+        assert len(ids) == len(set(ids)), path.name
+
+    for doc in load_corpus(CORPUS):
+        rel_ids = [r.id for r in doc.relations]
+        assert len(rel_ids) == len(set(rel_ids)), doc.doc_key

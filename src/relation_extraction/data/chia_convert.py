@@ -22,7 +22,6 @@ from __future__ import annotations
 import collections
 import random
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from .chia_brat import (
     SCHEMA_ENTITY_TYPES,
@@ -60,16 +59,9 @@ class DropLog:
 # --------------------------------------------------------------------------
 
 
-def _local_fragments(
-    entity: Entity, line_start: int, line_end: int
-) -> list[list[int]] | None:
-    """Re-base an entity's fragments against the criterion. None if it escapes."""
-    out = []
-    for start, end in entity.spans:
-        if start < line_start or end > line_end:
-            return None
-        out.append([start - line_start, end - line_start])
-    return out
+def _local_fragments(entity: Entity, line_start: int) -> list[list[int]]:
+    """Re-base an entity's fragments against the criterion that contains it."""
+    return [[s - line_start, e - line_start] for s, e in entity.spans]
 
 
 def convert_document(
@@ -137,22 +129,17 @@ def convert_document(
         text = doc.text[line_start:line_end]
         entities = []
         for ent in sorted(by_criterion.get(idx, []), key=lambda e: (e.start, e.end)):
-            fragments = _local_fragments(ent, line_start, line_end)
-            if fragments is None:  # already screened above; belt and braces
-                drops.add("entity: fragment escaped its criterion", ent.id)
-                continue
+            fragments = _local_fragments(ent, line_start)
 
-            # Offset assertions -- fail loudly, per the brief.
+            # The offset guarantee -- raise, never warn, and never `assert`,
+            # which `python -O` would strip along with the guarantee.
             rebuilt = " ".join(text[s:e] for s, e in fragments)
-            assert rebuilt == ent.ann_text, (
-                f"offset mismatch in {doc.doc_key} criterion {idx} entity {ent.id}: "
-                f"{rebuilt!r} != {ent.ann_text!r}"
-            )
-            start, end = fragments[0][0], fragments[-1][1]
-            if len(fragments) == 1:
-                assert text[start:end] == ent.ann_text, (
-                    f"contiguous offset mismatch in {doc.doc_key} entity {ent.id}"
+            if rebuilt != ent.ann_text:
+                raise ValueError(
+                    f"offset mismatch in {doc.doc_key} criterion {idx} entity "
+                    f"{ent.id}: {rebuilt!r} != {ent.ann_text!r}"
                 )
+            start, end = fragments[0][0], fragments[-1][1]
 
             entities.append(
                 {
@@ -237,8 +224,10 @@ def add_negatives(
     negative.
 
     ``ratio`` subsamples negatives to ``ratio x positives`` per instance; None
-    keeps every candidate. The **identical** procedure and seed are applied to
-    all three splits.
+    keeps every candidate. An instance with entities but no gold relation keeps
+    one negative rather than none -- those all-NA criteria are exactly what
+    teaches a model to abstain, and ``ratio x 0`` would erase all 239 of them.
+    The **identical** procedure and seed are applied to all three splits.
     """
     rng = random.Random(seed)
     stats = collections.Counter()
@@ -263,8 +252,8 @@ def add_negatives(
         ]
         stats["candidates"] += len(candidates)
 
-        if ratio is not None:
-            keep = int(round(ratio * n_pos))
+        if ratio is not None and candidates:
+            keep = max(1, int(round(ratio * n_pos)))
             if keep < len(candidates):
                 candidates = rng.sample(candidates, keep)
 
@@ -285,30 +274,26 @@ def make_splits(
     seed: int,
     fractions: tuple[float, float, float] = DEFAULT_SPLIT_FRACTIONS,
 ) -> dict[str, str]:
-    """Assign every trial to exactly one split. Grouping is by NCT id."""
-    assert abs(sum(fractions) - 1.0) < 1e-9, f"fractions must sum to 1: {fractions}"
+    """Assign every trial to exactly one split. Grouping is by NCT id.
+
+    The three slices partition a shuffled list, so disjointness and coverage
+    hold by construction; the caller re-checks them against the written files.
+    """
+    if abs(sum(fractions) - 1.0) >= 1e-9:
+        raise ValueError(f"fractions must sum to 1: {fractions}")
 
     ordered = sorted(set(nct_ids))  # sort first so the shuffle is deterministic
     random.Random(seed).shuffle(ordered)
 
-    n = len(ordered)
-    n_train = int(round(fractions[0] * n))
-    n_dev = int(round(fractions[1] * n))
-    bounds = {
+    n_train = int(round(fractions[0] * len(ordered)))
+    n_dev = int(round(fractions[1] * len(ordered)))
+    groups = {
         "train": ordered[:n_train],
         "dev": ordered[n_train : n_train + n_dev],
         "test": ordered[n_train + n_dev :],
     }
 
-    # Assert pairwise disjointness rather than assuming it.
-    for i, a in enumerate(SPLIT_NAMES):
-        for b in SPLIT_NAMES[i + 1 :]:
-            overlap = set(bounds[a]) & set(bounds[b])
-            assert not overlap, f"{a}/{b} share {len(overlap)} trials: {sorted(overlap)[:5]}"
-    assert sum(len(v) for v in bounds.values()) == n, "split sizes do not sum to n"
-    assert set().union(*(set(v) for v in bounds.values())) == set(ordered)
-
-    return {nct: name for name, group in bounds.items() for nct in group}
+    return {nct: name for name, group in groups.items() for nct in group}
 
 
 # --------------------------------------------------------------------------
