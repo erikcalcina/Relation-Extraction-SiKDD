@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from relation_extraction.data.chia_brat import (  # noqa: E402
     SCHEMA_RELATION_TYPES,
+    Entity,
     fix_entity_offsets,
     load_document,
     parse_ann,
@@ -253,3 +254,15 @@ def test_corpus_has_no_malformed_lines_and_no_duplicate_entity_ids():
     for doc in load_corpus(CORPUS):
         rel_ids = [r.id for r in doc.relations]
         assert len(rel_ids) == len(set(rel_ids)), doc.doc_key
+
+
+def test_discontinuous_entity_enclosing_span():
+    entity = Entity(
+        id="T1",
+        type="Condition",
+        spans=((40, 50), (12, 24)),
+        ann_text="example",
+    )
+
+    assert entity.start == 12
+    assert entity.end == 50
