@@ -139,7 +139,8 @@ def convert_document(
                     f"offset mismatch in {doc.doc_key} criterion {idx} entity "
                     f"{ent.id}: {rebuilt!r} != {ent.ann_text!r}"
                 )
-            start, end = fragments[0][0], fragments[-1][1]
+            start = min(s for s, _ in fragments)
+            end = max(e for _, e in fragments)
 
             entities.append(
                 {

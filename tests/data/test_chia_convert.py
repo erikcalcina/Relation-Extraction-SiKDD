@@ -245,8 +245,8 @@ def test_emitted_offsets_all_verify():
             for ent in inst["entities"]:
                 rebuilt = " ".join(inst["text"][s:e] for s, e in ent["fragments"])
                 assert rebuilt == ent["text"], f"{inst['id']}/{ent['id']}"
-                assert ent["start"] == ent["fragments"][0][0]
-                assert ent["end"] == ent["fragments"][-1][1]
+                assert ent["start"] == min(s for s, _ in ent["fragments"])
+                assert ent["end"] == max(e for _, e in ent["fragments"])
 
 
 @requires_prepared

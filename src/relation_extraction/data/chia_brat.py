@@ -80,11 +80,11 @@ class Entity:
 
     @property
     def start(self) -> int:
-        return self.spans[0][0]
+        return min(start for start, _ in self.spans)
 
     @property
     def end(self) -> int:
-        return self.spans[-1][1]
+        return max(end for _, end in self.spans)
 
 
 @dataclass
